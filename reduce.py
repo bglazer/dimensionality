@@ -36,6 +36,9 @@ class Reducer(torch.nn.Module):
         dists, self.idxs = self.balltree.query(self.data, k=self.num_neighbors)
         self.true_distances = torch.as_tensor(dists,dtype=torch.float32)
         self.true_distances = self.true_distances.reshape(-1,1)
+        max_dist = torch.max(self.true_distances)
+        #norm = transforms.Normalize(mean=0.0, std=1.0)
+        self.true_distances_norm = self.true_distances / max_dist
         
     def forward(self):
         projected = self.mlp(self.data)
@@ -62,6 +65,11 @@ class Reducer(torch.nn.Module):
 
         return proj_dists
 
+    def reduce(self):
+        projected = self.mlp(self.data)
+        projected = self.out_layer(projected)
+        return projected
+
 data = datasets.MNIST(root='./data',
                       train=True,
                       transform=transforms.ToTensor(),
@@ -73,26 +81,44 @@ data = Variable(data.view(-1, 28*28))
 #                                     #batch_size=batch_size, 
 #                                     shuffle=True)
 
-epochs = 200 
+epochs = 10000
 
-num_points = 1000
+num_points = 100
 num_neighbors = 10
 reducer = Reducer(data.data[:num_points],
                   output_size=2, 
                   num_neighbors=num_neighbors,
                   metric_p=2)
 
-optimizer = torch.optim.Adam(reducer.parameters())#, lr=1e-6)
+#print(torch.cuda.is_available())
+#reducer = reducer.cuda()
+optimizer = torch.optim.Adam(reducer.parameters(), lr=1e-2)
+#optimizer = torch.optim.SGD(reducer.parameters(), lr=.1)#, lr=1e-6)
 
 mse = torch.nn.MSELoss()
+
+def sse(x,y):
+    return torch.sum((x-y)**2)
+
+sample_size = 0
 
 for epoch in range(epochs):
     print(f'epoch: {epoch}')
     optimizer.zero_grad()
     projected_distances = reducer.forward()
-    loss = mse(projected_distances, reducer.true_distances)
+    if sample_size != 0:
+        sample_idxs = torch.randint(reducer.rows*reducer.num_neighbors, (sample_size,))
+        projected = projected_distances[sample_idxs]
+        true = reducer.true_distances_norm[sample_idxs]
+    else:
+        projected = projected_distances
+        true = reducer.true_distances_norm
+    loss = sse(projected, true)
     loss.backward()
     #torch.nn.utils.clip_grad_value_(reducer.parameters(), 10)
     optimizer.step()
     print(loss)
 
+reduced = reducer.reduce()
+import pickle
+pickle.dump(reduced, open('./data/proj.pickle','wb'))
