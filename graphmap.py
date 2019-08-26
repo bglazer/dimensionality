@@ -57,10 +57,9 @@ class NodeModel(torch.nn.Module):
         
         return out
 
-#class Network(torch_geometric.nn.MetaLayer):
 class GraphMap(torch.nn.Module):
     def __init__(self, data, node_sizes, num_neighbors=10):
-        super(Network, self).__init__()
+        super(GraphMap, self).__init__()
         
         self.rows, self.cols = data.shape
 
@@ -74,11 +73,11 @@ class GraphMap(torch.nn.Module):
         # create list of query nodes, repeated for each neighbor
         dst = np.repeat(range(len(data)), num_neighbors-1)
         # concatenate to make COO format
-        self.edge_index = np.array(dst,src).T
+        self.edge_index = np.array((dst,src)).T
 
         self.edge_attr = self.dists[:,1:].reshape(-1,1)
         # TODO still need to normalize?
-        true_distances = torch.as_tensor(dists, dtype=torch.float32)
+        true_distances = torch.as_tensor(self.dists, dtype=torch.float32)
         true_distances = true_distances.reshape(-1,1)
         max_dist = torch.max(true_distances)
         self.true_distances_norm = true_distances / max_dist
