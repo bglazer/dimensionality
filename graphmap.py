@@ -62,24 +62,12 @@ class GraphMap(torch.nn.Module):
 
         self.rows, self.cols = data.shape
 
-        balltree = BallTree(data, metric=squared_euclidean)
-        self.num_neighbors=num_neighbors
-        self.dists, self.idxs = balltree.query(data, k=num_neighbors)
-        # Getting index of neighbors. Exclude the first element, 
-        # which is just the query node itself with distance 0
-        src = self.idxs[:,1:]
-        src = src.reshape(1,-1).squeeze() # reshape to a vector
-        # create list of query nodes, repeated for each neighbor
-        dst = np.repeat(range(len(data)), num_neighbors-1)
-        # concatenate to make COO format
-        self.edge_index = tensor(np.array((dst,src)), dtype=torch.int64)
+        self.num_neighbors = num_neighbors
 
-        # TODO still need to normalize?
-        true_distances = torch.as_tensor(self.dists, dtype=torch.float32)
-        true_distances = true_distances[:,1:].reshape(-1,1)
-        max_dist = torch.max(true_distances)
-        self.true_distances_norm = true_distances / max_dist
-        self.edge_attr = tensor(self.true_distances_norm, dtype=torch.float32)
+
+        self.data = data.cuda()
+        self.edge_attr = self.edge_attr.cuda()
+        self.edge_index = self.edge_index.cuda()
 
         self.layers = ModuleList()
         for i in range(1,len(node_sizes)):
@@ -90,14 +78,36 @@ class GraphMap(torch.nn.Module):
             self.layers.append(layer)
         #self.model = Seq(*self.layers)
 
+    def compute_edges(self):
+        # TODO still need to normalize?
+        balltree = BallTree(data, metric=squared_euclidean)
+        self.dists, self.idxs = balltree.query(data, k=num_neighbors)
+        # Getting index of neighbors. Exclude the first element, 
+        # which is just the query node itself with distance 0
+        src = self.idxs[:,1:]
+        src = src.reshape(1,-1).squeeze() # reshape to a vector
+        # create list of query nodes, repeated for each neighbor
+        dst = np.repeat(range(len(data)), num_neighbors-1)
+        # concatenate to make COO format
+        self.edge_index = tensor(np.array((dst,src)), dtype=torch.int64)
+
+        # Transform distances into vector, normalize
+        true_distances = torch.as_tensor(self.dists, dtype=torch.float32)
+        true_distances = true_distances[:,1:].reshape(-1,1)
+        max_dist = torch.max(true_distances)
+        true_distances_norm = true_distances / max_dist
+        edge_attr = tensor(true_distances_norm, dtype=torch.float32)
+
+        return edge_attr, edge_index
+
     def reduce(self):
         x = self.data
         for layer in self.layers:
             x, _, _ = layer.forward(x, self.edge_index, self.edge_attr, u=None, batch=None)
         return x
 
-    def forward(self):
-        x = self.data
+    def forward(self,x):
+        self.edge_attr = self.compute_edges()
         for layer in self.layers:
             x, _, _ = layer.forward(x, self.edge_index, self.edge_attr, u=None, batch=None)
         projected = x
@@ -135,17 +145,16 @@ data = data.data
 data = data.type(torch.FloatTensor)
 data = Variable(data.view(-1, 28*28))
 
-epochs = 200
+epochs = 300
 
-num_points = 1000
-num_neighbors = 20
+num_points = 2000
+num_neighbors = 50
 # TODO optimize layer number/size
-reducer = GraphMap(data.data[:num_points],
-                   node_sizes=[28**2, 256, 64, 2],
+reducer = GraphMap(data[:num_points],
+                   node_sizes=[28**2, 512, 256, 64, 2],
                    num_neighbors=num_neighbors)
 
-#device = torch.device(0)
-#reducer = reducer.to(device)
+reducer = reducer.cuda()
 
 optimizer = torch.optim.Adam(reducer.parameters())
 
@@ -154,8 +163,12 @@ def sse(x,y):
 
 for epoch in range(epochs):
     print(f'epoch: {epoch}')
+    perm = torch.randperm(data.size(0))
+    idx = perm[:k]
+    samples = tensor[idx]
+    
     optimizer.zero_grad()
-    projected = reducer.forward()
+    projected = reducer.forward(samples)
     true = reducer.true_distances_norm
     loss = sse(projected, true)
     loss.backward()
@@ -169,9 +182,30 @@ pickle.dump(reduced, open('./data/proj.pickle','wb'))
 import matplotlib.pyplot as plt
 labels = pickle.load(open('./data/labels.pickle','rb'))[:num_points]
 
+reduced = reduced.cpu()
 p = reduced.detach().numpy()
 x,y = p[:,0],p[:,1]
 
 plt.figure(figsize=(10,10))
 plt.scatter(x,y,c=labels,s=8)
 plt.savefig('./data/reduced.png')
+
+r = reduced.detach().numpy()
+bt = BallTree(r)
+_,proj_neighb_idx = bt.query(r, k=num_neighbors)
+
+t = 0
+for i in range(num_points):
+    for j in range(num_neighbors):
+        if reducer.idxs[i,j] in proj_neighb_idx[i]: t+=1
+print(t, t/(num_points*num_neighbors))
+
+#random_start = 
+#bt = BallTree(r)
+#_,proj_neighb_idx = bt.query(r, k=num_neighbors)
+#
+#t = 0
+#for i in range(num_points):
+#    for j in range(num_neighbors):
+#        if reducer.idxs[i,j] in nn[i]: t+=1
+#print(t, t/(num_points*num_neighbors))
