@@ -11,6 +11,7 @@ import numpy as np
 from sklearn.neighbors import BallTree, DistanceMetric
 from sklearn.decomposition import PCA
 from matplotlib import pyplot as plt
+from matplotlib.animation import FuncAnimation
 
 # load data
 num_points = 400
@@ -45,15 +46,22 @@ dists = dists/np.max(dists)
 #projected = np.random.random((num_points, dim))
 pca = PCA(2)
 projected = pca.fit_transform(data)
+projected = projected/np.max(projected)
 
 # find distance from source idx[:,0] to neighbors, using data so that gradient can be calculated
 #for start_idx, nbrs in enumerate(idxs):
 #    d = data[start_idx] - data[nbrs]
-num_iters = 1
+num_iters = 20
 eps = .01
+clip = .25
 
-#def step(projected):
-for i in range(100):
+def clip(grad, maxgrad=.25):
+    grad_nrm = np.sqrt(np.sum((grad)**2))
+    if grad_nrm > maxgrad:
+        grad = grad/grad_nrm * maxgrad
+    return grad
+
+def step(projected):
     nbrs = projected[idxs[:,1:]]
     srcs = projected[idxs[:,0]]
 
@@ -63,9 +71,9 @@ for i in range(100):
 
     # distance from source to non-neighbors
 
-    #non_nbrs = np.ndarray((total_non_nbrs, dim))
     d_non_nbrs = np.ndarray((num_non_nbrs, num_points, dim))
 
+    #for idx_row in idxs:
     for idx_row in idxs:
         src_idx = idx_row[0]
         src = projected[src_idx]
@@ -78,41 +86,76 @@ for i in range(100):
         
     # find farthest neighbors
     d_farthest = d_nbrs[-1,:,:]
-    dist_farthest = np.sum(d_nbrs[-1,:,:], axis=1)
+    dist_farthest = np.sum(d_farthest**2, axis=1)
 
     # calculate gradient
-    dist_nbr = np.sum(d_nbrs, axis=2)
-    dist_non_nbr = np.sum(d_non_nbrs, axis=2)
+    grad = np.zeros((num_points, dim))
+    dist_nbr = np.sum(d_nbrs**2, axis=2)
+    dist_non_nbr = np.sum(d_non_nbrs**2, axis=2)
 
-    # Points in original local neighborhood that are outside the threshold in the projected space
-    nbr_mask = dist_nbr > dist_farthest
-    non_nbr_mask = dist_non_nbr < dist_farthest
+    # Points in the local neighborhood 
+    nbr_mask = dist_nbr < dist_farthest
+    non_nbr_mask = dist_non_nbr > dist_farthest
 
     grad_nbr = d_farthest - d_nbrs
     grad_nbr[nbr_mask] = 0.0
     grad_nbr = np.sum(grad_nbr, axis=0)
+    grad += grad_nbr
 
     grad_non_nbr = d_farthest - d_non_nbrs
     grad_non_nbr[non_nbr_mask] = 0.0
     grad_non_nbr = np.sum(grad_non_nbr, axis=0)
+    grad += grad_non_nbr
 
-    grad = grad_nbr + grad_non_nbr
+    # Compute gradient with respect to the threshold (t), farthest point
+    #grad_t = -d_farthest
+    #tidx = idxs[:,-1]
+    #grad[tidx] += grad_t
+
+    # Gradient wrt points in local neighborhood
+    grad_n = d_nbrs
+    grad_n[nbr_mask] = 0.0
+    grad += np.sum(grad_n, axis=0)
+
+    # Gradient wrt points not in local neighborhood
+    grad_non = d_non_nbrs
+    grad_non[non_nbr_mask] = 0.0
+    grad += np.sum(grad_non, axis=0)
 
     # optimize wrt constraints
-    projected = projected + grad*eps
+    grad = grad*eps
+    #grad = clip(grad)
+    projected = projected + grad
+    return projected
 
-#    return up
+#ax.clear()
+#plt.scatter(projected[:,0], projected[:,1], c=labels)
+#plt.pause(.05)
+def plot(projected):
+    fig, ax = plt.subplots()
+    for i in range(num_iters):
+        projected = step(projected)
+    plt.scatter(projected[:,0], projected[:,1], c=labels)
+    plt.show()
 
-#fig = plt.figure()
-#ax = fig.add_subplot(1,1,1)
-#
-#up = projected
-#def plot(up, ax):
-#    for i in range(100):
-#        up = step(up)
-#    ax.clear()
-#    plt.scatter(up[:,0], up[:,1], c=labels)
-#    return plt,up
-#
-#plot(up,ax)
-#plt.show()
+def animate(projected):
+    fig, ax = plt.subplots()
+    ln, = plt.plot(projected[:,0],projected[:,1], c=labels)
+
+    def init():
+        fig.gca().relim()
+        fig.gca().autoscale_view()
+        return ln,
+
+    def update(frame):
+        projected = step(projected)
+        ln.set_data(projected[:,0],projected[:,1])
+        return ln,
+
+    ani = FuncAnimation(fig, update, frames=range(num_iters),
+                        init_func=init, interval=1)
+                        #init_func=init, blit=True, interval=1)
+    plt.show()
+
+#animate(projected)
+plot(projected)
