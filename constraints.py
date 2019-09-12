@@ -9,11 +9,13 @@ from torchvision import transforms
 from torch.autograd import Variable
 import numpy as np
 from sklearn.neighbors import BallTree, DistanceMetric
+from sklearn.decomposition import PCA
 from matplotlib import pyplot as plt
 
 # load data
 num_points = 400
 num_nbrs = 10
+num_non_nbrs = 50
 dim = 2
 #sample_size = 50
 
@@ -40,8 +42,9 @@ dists, idxs = balltree.query(npdata, k=num_nbrs)
 dists = dists/np.max(dists)
 
 # project data into lower dimension
-# TODO better initial projection? T-SNE/UMAP/PCA etc? Maybe PCA, given results in paper?
-projected = np.random.random((num_points, dim))
+#projected = np.random.random((num_points, dim))
+pca = PCA(2)
+projected = pca.fit_transform(data)
 
 # find distance from source idx[:,0] to neighbors, using data so that gradient can be calculated
 #for start_idx, nbrs in enumerate(idxs):
@@ -49,7 +52,8 @@ projected = np.random.random((num_points, dim))
 num_iters = 1
 eps = .01
 
-def step(projected, i):
+#def step(projected):
+for i in range(100):
     nbrs = projected[idxs[:,1:]]
     srcs = projected[idxs[:,0]]
 
@@ -58,7 +62,6 @@ def step(projected, i):
     d_nbrs = srcs - nbrs
 
     # distance from source to non-neighbors
-    num_non_nbrs = 10
 
     #non_nbrs = np.ndarray((total_non_nbrs, dim))
     d_non_nbrs = np.ndarray((num_non_nbrs, num_points, dim))
@@ -96,16 +99,20 @@ def step(projected, i):
     grad = grad_nbr + grad_non_nbr
 
     # optimize wrt constraints
-    up = projected + grad*eps
+    projected = projected + grad*eps
 
-    return up
+#    return up
 
-    #fig = plt.figure()
-    #ax = fig.add_subplot(1,1,1)
-
-    #up = projected
-    #def plot_step(up):
-    #up = step(up)
-    #ax.clear()
-    #plt.scatter(up[:,0], up[:,1])
-    #return up
+#fig = plt.figure()
+#ax = fig.add_subplot(1,1,1)
+#
+#up = projected
+#def plot(up, ax):
+#    for i in range(100):
+#        up = step(up)
+#    ax.clear()
+#    plt.scatter(up[:,0], up[:,1], c=labels)
+#    return plt,up
+#
+#plot(up,ax)
+#plt.show()
