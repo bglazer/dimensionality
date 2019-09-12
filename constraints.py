@@ -15,10 +15,7 @@ from matplotlib.animation import FuncAnimation
 
 # load data
 num_points = 400
-num_nbrs = 10
-num_non_nbrs = 50
 dim = 2
-#sample_size = 50
 
 data = datasets.MNIST(root='./data',
                       train=True,
@@ -44,22 +41,37 @@ dists = dists/np.max(dists)
 
 # project data into lower dimension
 #projected = np.random.random((num_points, dim))
-pca = PCA(2)
+pca = PCA(dim)
 projected = pca.fit_transform(data)
 projected = projected/np.max(projected)
 
 # find distance from source idx[:,0] to neighbors, using data so that gradient can be calculated
 #for start_idx, nbrs in enumerate(idxs):
 #    d = data[start_idx] - data[nbrs]
-num_iters = 20
+num_iters = 100
 eps = .01
-clip = .25
+num_nbrs = 100
+num_non_nbrs = 50
 
 def clip(grad, maxgrad=.25):
     grad_nrm = np.sqrt(np.sum((grad)**2))
     if grad_nrm > maxgrad:
         grad = grad/grad_nrm * maxgrad
     return grad
+  
+def average_jaccard(projected):
+    balltree = BallTree(projected, metric=squared_euclidean, leaf_size=num_nbrs)
+    _, proj_idxs = balltree.query(projected, k=num_nbrs)
+
+    ajd = 0.0
+    for i,proj_nbrs in enumerate(proj_idxs):
+        original_nbrs = idxs[i,:]
+        inter = len(set(original_nbrs) & set(proj_nbrs))
+        union = len(set(original_nbrs) | set(proj_nbrs))
+        ajd += (union - inter)/union
+
+    return ajd/num_points
+
 
 def step(projected):
     nbrs = projected[idxs[:,1:]]
@@ -123,9 +135,11 @@ def step(projected):
     grad += np.sum(grad_non, axis=0)
 
     # optimize wrt constraints
-    grad = grad*eps
+    grad = -grad*eps
     #grad = clip(grad)
     projected = projected + grad
+    print(f'gradient {np.sum(grad**2)}')
+    print(f'average jaccard {average_jaccard(projected)}')
     return projected
 
 #ax.clear()
