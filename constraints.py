@@ -29,17 +29,19 @@ data = Variable(data.view(-1, 28*28))
 data = data[:num_points]
 npdata = data.numpy()
 
-# compute knn graph
-def squared_euclidean(x, y):
-    d = np.sum((x-y)**2)
-    return d
+num_iters = 30
+eps = .01
+num_nbrs = 10
 
-num_iters = 10
-eps = .1
-num_nbrs = 50
-num_non_nbrs = 50
+a = np.random.random((10,2))+10
+b = np.random.random((10,2))
+npdata = np.concatenate((a,b))
+projected = npdata
+num_points = 20
+labels = np.ones(20)
+labels[10:] = 2
 
-balltree = BallTree(npdata, metric=squared_euclidean, leaf_size=num_nbrs)
+balltree = BallTree(npdata, metric='euclidean', leaf_size=num_nbrs)
 dists, idxs = balltree.query(npdata, k=num_nbrs)
 dists = dists/np.max(dists)
 
@@ -47,6 +49,7 @@ dists = dists/np.max(dists)
 projected = np.random.random((num_points, dim))
 #pca = PCA(dim)
 #projected = pca.fit_transform(data)
+#TODO create a test data set of two completely disconnected normal distributions
 #projected = projected/np.max(projected)
 
 # find distance from source idx[:,0] to neighbors, using data so that gradient can be calculated
@@ -58,7 +61,7 @@ def clip(grad, maxgrad=.25):
     return grad
   
 def average_jaccard(projected):
-    balltree = BallTree(projected, metric=squared_euclidean, leaf_size=num_nbrs)
+    balltree = BallTree(projected, metric='euclidean', leaf_size=num_nbrs)
     _, proj_idxs = balltree.query(projected, k=num_nbrs)
 
     ajd = 0.0
@@ -80,71 +83,66 @@ def step(projected, eps):
     # distance from source to non-neighbors
     d_nbrs = srcs - nbrs
 
-    # find farthest neighbors
-    d_farthest = d_nbrs[-1,:,:]
-
-    d_non_nbrs = np.ndarray((num_non_nbrs, num_points, dim))
-    # randomly select points that weren't in the original local neighborhood
-    for idx_row in idxs:
-        src_idx = idx_row[0]
-        src = projected[src_idx]
-
-        p = np.ones(num_points)
-        p = p * 1/(num_points - num_nbrs)
-        p[idx_row] = 0.0
-        random_non_nbrs = np.random.choice(num_points, size=(num_non_nbrs), replace=False, p=p)
-        d_non_nbrs[:,src_idx,:] = src - projected[random_non_nbrs]
-        
-
     # Calculate distances
-    dist_nbr = np.sum(d_nbrs**2, axis=2)
-    dist_non_nbr = np.sum(d_non_nbrs**2, axis=2)
-    dist_farthest = np.sum(d_farthest**2, axis=1)
+    dist_nbrs = np.sqrt(np.sum(d_nbrs**2, axis=2))
+    # find closest non-neighbor in projected space
+    farthest_nbr_idx = np.argmax(dist_nbrs, axis=0)
+    # distance to farthest neighbor
+    balltree = BallTree(projected, metric='euclidean', leaf_size=num_nbrs)
+    farthest_nbr_dist = dist_nbrs[farthest_nbr_idx, np.arange(num_points)]
+    radius_idxs,radius_dists = balltree.query_radius(srcs, r=farthest_nbr_dist, sort_results=True, return_distance=True) 
 
-    # calculate gradient
     grad = np.zeros((num_points, dim))
+    # find distance to closest non-neighbor in projected space
+    radius_non_nbr_idxs = np.setdiff1d(radius_idxs, idxs, assume_unique=True)
+    # getting element 1 and not 0 because element 0 is always the source
+    closest_non_nbr_idx = radius_non_nbr_idxs[1]
+    # have to use a for loop because there are a varying number of non neighbors for each point
+    # can't use vectorized numpy operations
+    for i,non_nbr_idxs in enumerate(radius_non_nbr_idxs):
+        # get points inside the radius
+        non_nbr_idxs = non_nbr_idxs[1:]
+        non_nbrs = projected[non_nbr_idxs]
+        # TODO should this be the opposite direction?
+        # find direction from source to the non-neighbors
+        d_non_nbrs = srcs[i] - non_nbrs
+        dist_non_nbrs = np.sqrt(np.sum(d_non_nbrs**2, axis=1, keepdims=True)) + .00001
+        # distance from src to non_neighbor < dist from src to neighbor
+        constraints = dist_non_nbrs < dist_nbrs[:,i]
+        # TODO these variables really need better names
+        # Number of non_neighbors that are closer than each neighbor
+        num_violated = np.sum(constraints, axis=0, keepdims=True)
 
-    # Points in the local neighborhood 
-    nbr_mask = dist_nbr < dist_farthest
-    non_nbr_mask = dist_non_nbr > dist_farthest
+        # np.newaxis is a hack to make dist_nbrs broadcastable
+        grad[idxs[i,1:]] += -num_violated.T * d_nbrs[:,i]/dist_nbrs[:,i,np.newaxis]
 
-    # Compute gradient of source point
-    grad_nbr = d_farthest - d_nbrs
-    grad_nbr[nbr_mask] = 0.0
-    # sum puts this into a vector form, which has to expanded so that it's broadcastable
-    n_nrm = np.expand_dims(np.sum(~nbr_mask, axis=0), 1) + 0.00001
-    grad_nbr = np.sum(grad_nbr, axis=0)/n_nrm
-    grad += grad_nbr
+        num_violated = np.sum(~constraints, axis=1, keepdims=True)
+        grad[non_nbr_idxs] += num_violated * d_non_nbrs/dist_non_nbrs
 
-    grad_non_nbr = d_farthest - d_non_nbrs
-    grad_non_nbr[non_nbr_mask] = 0.0
-    non_nrm = np.expand_dims(np.sum(~non_nbr_mask, axis=0), 1) + .00001
-    grad_non_nbr = np.sum(grad_non_nbr, axis=0)/non_nrm
-    grad += grad_non_nbr
+    print(np.sum(constraints))
+    print(np.sum(~constraints))
 
-    # Compute gradient with respect to the threshold (t), i.e. the farthest point in the original neighborhood
-    grad_t = d_farthest
-    grad[idxs[:,-1]] += grad_t
+        #wh = np.where(constraints)
+        ## select neighbor vectors where the constraints are true
+        ## and update their gradient
+        #nbr_idx = wh[0]
+        #not_nbr_idx = wh[1]
+        #grad[nbr_idx] += d_nbrs[wh[1], wh[0]]
+        #breakpoint()
 
-    # TODO add penalty for being too close to the source
+        ## select non-neighors where the constraints are false
+        #nwh = np.where(~constraints)
+        #grad[nwh[0]] += d_non_nbr[nwh[0]]
+        ## TODO calculate mask statistics for diagnostic purposes
 
-    # Gradient wrt points in local neighborhood
-    grad_n = d_nbrs
-    grad_n[nbr_mask] = 0.0
-    grad += -np.sum(grad_n, axis=0)/n_nrm
+        #grad[non_nbr_idxs] += d_non_nbrs/dist_non_nbrs 
 
-    # Gradient wrt points not in local neighborhood
-    grad_non = d_non_nbrs
-    grad_non[non_nbr_mask] = 0.0
-    grad += -np.sum(grad_non, axis=0)/non_nrm
-
-    # optimize wrt constraints
+    #grad[idxs[:,1:]] += (d_nbrs/np.expand_dims(dist_nbr,2)).transpose((1,0,2))
+        
     grad = grad*eps
     #grad = clip(grad)
     # TODO this should be subtraction to minimize the gradient
-    projected += grad
-    print(f'neighbors in threshold {np.sum(nbr_mask)/(num_points*num_nbrs)}')
-    print(f'non-neighbors not in threshold {np.sum(non_nbr_mask)/(num_points*num_non_nbrs)}')
+    projected -= grad
     print(f'gradient {np.sum(grad**2)}')
     return projected, grad
 
@@ -154,7 +152,7 @@ def step(projected, eps):
 def run(projected, eps):
     start_ajd = average_jaccard(projected)
     for i in range(num_iters):
-        eps = .99*eps
+        #eps = .99*eps
         projected, grad = step(projected, eps=eps)
     plot(projected,grad)
     end_ajd = average_jaccard(projected)
@@ -169,6 +167,7 @@ def plot(projected, grad=None):
         lc = collections.LineCollection(lines)
         ax.add_collection(lc)
     plt.show()
+    plt.pause(1)
 
 def animate(projected):
     fig, ax = plt.subplots()
