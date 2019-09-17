@@ -23,16 +23,16 @@ def small_example():
     labels[10:] = 2
     return data, labels
 
-num_points = 400
+num_points = 600
 dim = 2
 
-num_iters = 30
+num_iters = 20
 eps = 1
-num_nbrs = 15
+num_nbrs = 50
 
-#data, labels = load_mnist(num_points = num_points)
-data, labels = small_example()
+data, labels = load_mnist(num_points = num_points)
+#data, labels = small_example()
 
-jg = JaccardGradient(dim=2, num_nbrs=10)
-projected, grad = jg.fit_transform(data, eps=eps, num_iters=num_iters, verbose=True)
+jg = JaccardGradient(data, dim=2, num_nbrs=num_nbrs, projection='pca')
+projected, grad = jg.fit_transform(eps=eps, num_iters=num_iters, verbose=True)
 jg.plot(projected, grad=grad, labels=labels)

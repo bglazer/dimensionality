@@ -9,10 +9,23 @@ from matplotlib.animation import FuncAnimation
 
 # find distance from source idx[:,0] to neighbors, using data so that gradient can be calculated
 class JaccardGradient():
-    def __init__(self, dim, num_nbrs, metric='euclidean'):
+    def __init__(self, data, dim, num_nbrs, metric='euclidean', projection='pca'):
         self.dim = dim
         self.num_nbrs = num_nbrs
         self.metric = metric
+
+        self.num_points = data.shape[0]
+        balltree = BallTree(data, metric=self.metric, leaf_size=self.num_nbrs)
+        _, self.idxs = balltree.query(data, k=self.num_nbrs)
+
+        # project data into lower dimension
+        if projection == 'random':
+            self.initial_projected = np.random.random((self.num_points, self.dim))
+        elif projection == 'pca':
+            pca = PCA(self.dim)
+            self.initial_projected = pca.fit_transform(data)
+        else:
+            raise Exception(f'The given projection: "{projection}" is not supported. Try "pca" or "random"')
 
     # TODO fix this 
     def clip(self, grad, maxgrad=.25):
@@ -96,28 +109,14 @@ class JaccardGradient():
 
         return projected, grad
 
-    def fit_transform(self, data, eps=1.0, num_iters=50, verbose=False, projection='pca'):
-        self.num_points = data.shape[0]
-        balltree = BallTree(data, metric=self.metric, leaf_size=self.num_nbrs)
-        _, self.idxs = balltree.query(data, k=self.num_nbrs)
-
-        # project data into lower dimension
-        if projection == 'random':
-            projected = np.random.random((self.num_points, self.dim))
-        elif projection == 'pca':
-            pca = PCA(self.dim)
-            projected = pca.fit_transform(data)
-        else:
-            raise Exception(f'The given projection: "{projection}" is not supported. Try "pca" or "random"')
-
-        #projected = projected/np.max(projected)
-
+    def fit_transform(self, eps=1.0, num_iters=50, verbose=False):
         if verbose:
-            start_ajd = self.average_jaccard(projected)
+            start_ajd = self.average_jaccard(self.initial_projected)
             
+        projected, grad = self.step(self.initial_projected, eps=eps, verbose=verbose)
         for i in range(num_iters):
             # TODO learning rate decay?
-            #eps = .99*eps
+            eps = .99*eps
             projected, grad = self.step(projected, eps=eps, verbose=verbose)
 
         if verbose:
@@ -139,22 +138,25 @@ class JaccardGradient():
         plt.pause(10)
 
     # TODO fix this
-    def animate(self, projected):
+    def animate(self, num_iters, labels):
         fig, ax = plt.subplots()
-        ln, = plt.plot(projected[:,0],projected[:,1], c=labels)
+        ln = plt.scatter(self.initial_projected[:,0], self.initial_projected[:,1], c=labels)
+        projected = self.initial_projected
 
         def init():
-            fig.gca().relim()
-            fig.gca().autoscale_view()
+            #fig.gca().relim()
+            #fig.gca().autoscale_view()
             return ln,
 
+        # this is a closure that encloses the projected variable
+        # that's necessary to keep updating the newest projection
         def update(frame):
-            projected = step(projected)
-            ln.set_data(projected[:,0],projected[:,1])
+            pr,_ = self.step(projected, eps=1.0, verbose=True)
+            ln.set_offsets(pr)
             return ln,
 
         ani = FuncAnimation(fig, update, frames=range(num_iters),
-                            init_func=init, interval=1)
-                            #init_func=init, blit=True, interval=1)
+                            init_func=init, interval=0.001, repeat=False)
         plt.show()
+        ani.save(filename='constraints_animation.gif', writer='imagemagick')
 
