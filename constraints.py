@@ -51,36 +51,38 @@ class JaccardGradient():
         # distance to farthest neighbor
         balltree = BallTree(projected, metric='euclidean', leaf_size=self.num_nbrs)
         farthest_nbr_dist = dist_nbrs[farthest_nbr_idx, np.arange(self.num_points)]
-        radius_idxs,radius_dists = balltree.query_radius(srcs, r=farthest_nbr_dist, sort_results=True, return_distance=True) 
+        proj_dists, proj_idxs= balltree.query(srcs, k=self.num_nbrs)
 
         grad = np.zeros((self.num_points, self.dim))
         # find distance to closest non-neighbor in projected space
-        radius_non_nbr_idxs = np.setdiff1d(radius_idxs, self.idxs, assume_unique=True)
-        # getting element 1 and not 0 because element 0 is always the source
-        closest_non_nbr_idx = radius_non_nbr_idxs[1]
         # have to use a for loop because there are a varying number of non neighbors for each point
+        # TODO somehow switch to vectorized operations?
         # can't use vectorized numpy operations
-        for i,non_nbr_idxs in enumerate(radius_non_nbr_idxs):
+        for i,proj_idx in enumerate(proj_idxs):
+            non_nbr_idxs = np.setdiff1d(proj_idx, self.idxs[i], assume_unique=True)
+            if len(non_nbr_idxs) == 0:
+                continue
             # get points inside the radius
-            non_nbr_idxs = non_nbr_idxs[1:]
+            #non_nbr_idxs = non_nbr_idxs[1:]
             non_nbrs = projected[non_nbr_idxs]
             # find direction from source to the non-neighbors
             d_non_nbrs = srcs[i] - non_nbrs
             dist_non_nbrs = np.sqrt(np.sum(d_non_nbrs**2, axis=1, keepdims=True)) + .00001
-            # distance from src to non_neighbor < dist from src to neighbor
-            constraints = dist_non_nbrs < dist_nbrs[:,i]
-            # Number of non_neighbors that are closer than each neighbor
-            num_violated = np.sum(constraints, axis=0, keepdims=True)
 
+            farthest_nbr = proj_dists[i,-1] 
+            constraints = dist_nbrs[:,i] < farthest_nbr
+            # where the constraint is not met, calculate the gradient
+            unmet_idxs = self.idxs[i,1:][~constraints]
+            unmet_nbrs = d_nbrs[:,i][~constraints]
             # np.newaxis is a hack to make dist_nbrs broadcastable
-            grad[self.idxs[i,1:]] += -num_violated.T * d_nbrs[:,i]/dist_nbrs[:,i,np.newaxis]
+            unmet_dist = dist_nbrs[:,i,np.newaxis][~constraints]
+            grad[unmet_idxs] += -unmet_nbrs/unmet_dist
 
-            num_violated = np.sum(~constraints, axis=1, keepdims=True)
-            grad[non_nbr_idxs] += num_violated * d_non_nbrs/dist_non_nbrs
+            grad[non_nbr_idxs] += d_non_nbrs/dist_non_nbrs
 
             # gradient with respect to source point
             grad[i] += \
-                np.sum(d_nbrs[:,i]/dist_nbrs[:,i,np.newaxis], axis=0) - \
+                np.sum(unmet_nbrs/unmet_dist, axis=0) - \
                 np.sum(d_non_nbrs/dist_non_nbrs, axis=0)
 
             
@@ -89,22 +91,25 @@ class JaccardGradient():
 
         if verbose:
             # TODO more diagnostic info
-            print(np.sum(constraints))
-            print(np.sum(~constraints))
             print(f'gradient {np.sum(grad**2)}')
             print(self.average_jaccard(projected))
 
         return projected, grad
 
-    def fit_transform(self, data, eps=1.0, num_iters=50, verbose=False):
+    def fit_transform(self, data, eps=1.0, num_iters=50, verbose=False, projection='pca'):
         self.num_points = data.shape[0]
         balltree = BallTree(data, metric=self.metric, leaf_size=self.num_nbrs)
         _, self.idxs = balltree.query(data, k=self.num_nbrs)
 
         # project data into lower dimension
-        #projected = np.random.random((num_points, dim))
-        pca = PCA(self.dim)
-        projected = pca.fit_transform(data)
+        if projection == 'random':
+            projected = np.random.random((self.num_points, self.dim))
+        elif projection == 'pca':
+            pca = PCA(self.dim)
+            projected = pca.fit_transform(data)
+        else:
+            raise Exception(f'The given projection: "{projection}" is not supported. Try "pca" or "random"')
+
         #projected = projected/np.max(projected)
 
         if verbose:
