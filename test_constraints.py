@@ -1,0 +1,38 @@
+import numpy as np
+from matplotlib import pyplot as plt
+from matplotlib import collections
+from matplotlib.animation import FuncAnimation
+from constraints import JaccardGradient
+
+def load_mnist(num_points):
+    data = np.load('data/mnist_data.npy')
+    labels = np.load('data/mnist_labels.npy')
+    data = data.reshape(-1, 28*28)
+    data = data[:num_points]
+    labels = labels[:num_points]
+    return data,labels
+
+
+# Random completely separated data
+def small_example():
+    a = np.random.random((10,2))+10
+    b = np.random.random((10,2))
+    data = np.concatenate((a,b))
+    num_points = 20
+    labels = np.ones(20)
+    labels[10:] = 2
+    return data, labels
+
+num_points = 400
+dim = 2
+
+num_iters = 30
+eps = 1
+num_nbrs = 15
+
+#data, labels = load_mnist(num_points = num_points)
+data, labels = small_example()
+
+jg = JaccardGradient(dim=2, num_nbrs=10)
+projected, grad = jg.fit_transform(data, eps=eps, num_iters=num_iters, verbose=True)
+jg.plot(projected, grad=grad, labels=labels)
