@@ -29,27 +29,27 @@ data = Variable(data.view(-1, 28*28))
 data = data[:num_points]
 npdata = data.numpy()
 
-num_iters = 30
-eps = .01
-num_nbrs = 10
+num_iters = 50
+eps = 1
+num_nbrs = 15
 
-a = np.random.random((10,2))+10
-b = np.random.random((10,2))
-npdata = np.concatenate((a,b))
-projected = npdata
-num_points = 20
-labels = np.ones(20)
-labels[10:] = 2
+# Random completely separated data
+#a = np.random.random((10,2))+10
+#b = np.random.random((10,2))
+#npdata = np.concatenate((a,b))
+#projected = npdata
+#num_points = 20
+#labels = np.ones(20)
+#labels[10:] = 2
 
 balltree = BallTree(npdata, metric='euclidean', leaf_size=num_nbrs)
 dists, idxs = balltree.query(npdata, k=num_nbrs)
 dists = dists/np.max(dists)
 
 # project data into lower dimension
-projected = np.random.random((num_points, dim))
-#pca = PCA(dim)
-#projected = pca.fit_transform(data)
-#TODO create a test data set of two completely disconnected normal distributions
+#projected = np.random.random((num_points, dim))
+pca = PCA(dim)
+projected = pca.fit_transform(data)
 #projected = projected/np.max(projected)
 
 # find distance from source idx[:,0] to neighbors, using data so that gradient can be calculated
@@ -121,29 +121,13 @@ def step(projected, eps):
 
     print(np.sum(constraints))
     print(np.sum(~constraints))
-
-        #wh = np.where(constraints)
-        ## select neighbor vectors where the constraints are true
-        ## and update their gradient
-        #nbr_idx = wh[0]
-        #not_nbr_idx = wh[1]
-        #grad[nbr_idx] += d_nbrs[wh[1], wh[0]]
-        #breakpoint()
-
-        ## select non-neighors where the constraints are false
-        #nwh = np.where(~constraints)
-        #grad[nwh[0]] += d_non_nbr[nwh[0]]
-        ## TODO calculate mask statistics for diagnostic purposes
-
-        #grad[non_nbr_idxs] += d_non_nbrs/dist_non_nbrs 
-
-    #grad[idxs[:,1:]] += (d_nbrs/np.expand_dims(dist_nbr,2)).transpose((1,0,2))
         
     grad = grad*eps
     #grad = clip(grad)
     # TODO this should be subtraction to minimize the gradient
     projected -= grad
     print(f'gradient {np.sum(grad**2)}')
+    print(average_jaccard(projected))
     return projected, grad
 
 #ax.clear()
@@ -167,7 +151,7 @@ def plot(projected, grad=None):
         lc = collections.LineCollection(lines)
         ax.add_collection(lc)
     plt.show()
-    plt.pause(1)
+    plt.pause(10)
 
 def animate(projected):
     fig, ax = plt.subplots()
