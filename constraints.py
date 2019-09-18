@@ -35,7 +35,7 @@ class JaccardGradient():
         return grad
       
     def average_jaccard(self, projected):
-        balltree = BallTree(projected, metric='euclidean', leaf_size=self.num_nbrs)
+        balltree = BallTree(projected, metric=self.metric, leaf_size=self.num_nbrs)
         _, proj_idxs = balltree.query(projected, k=self.num_nbrs)
 
         ajd = 0.0
@@ -48,7 +48,7 @@ class JaccardGradient():
         return ajd/self.num_points
 
 
-    def step(self, projected, eps, verbose=False):
+    def step(self, projected, prev_grad, eps, gamma, verbose=False):
         nbrs = projected[self.idxs[:,1:]]
         srcs = projected[self.idxs[:,0]]
 
@@ -62,7 +62,7 @@ class JaccardGradient():
         # find closest non-neighbor in projected space
         farthest_nbr_idx = np.argmax(dist_nbrs, axis=0)
         # distance to farthest neighbor
-        balltree = BallTree(projected, metric='euclidean', leaf_size=self.num_nbrs)
+        balltree = BallTree(projected, metric=self.metric, leaf_size=self.num_nbrs)
         farthest_nbr_dist = dist_nbrs[farthest_nbr_idx, np.arange(self.num_points)]
         proj_dists, proj_idxs= balltree.query(srcs, k=self.num_nbrs)
 
@@ -99,7 +99,8 @@ class JaccardGradient():
                 np.sum(d_non_nbrs/dist_non_nbrs, axis=0)
 
             
-        grad = grad*eps
+        grad = (grad*eps + prev_grad*gamma)
+
         projected -= grad
 
         if verbose:
@@ -109,15 +110,17 @@ class JaccardGradient():
 
         return projected, grad
 
-    def fit_transform(self, eps=1.0, num_iters=50, verbose=False):
+    def fit_transform(self, eps=1.0, gamma=.9, num_iters=50, verbose=False):
         if verbose:
             start_ajd = self.average_jaccard(self.initial_projected)
             
-        projected, grad = self.step(self.initial_projected, eps=eps, verbose=verbose)
+        prev_grad = np.zeros((self.num_points, self.dim))
+        projected, grad = self.step(self.initial_projected, prev_grad, gamma=gamma, eps=eps, verbose=verbose)
         for i in range(num_iters):
             # TODO learning rate decay?
             eps = .99*eps
-            projected, grad = self.step(projected, eps=eps, verbose=verbose)
+            projected, grad = self.step(projected, prev_grad, gamma=gamma, eps=eps, verbose=verbose)
+            prev_grad = grad
 
         if verbose:
             end_ajd = self.average_jaccard(projected)
@@ -140,8 +143,9 @@ class JaccardGradient():
     # TODO fix this
     def animate(self, num_iters, labels):
         fig, ax = plt.subplots()
-        ln = plt.scatter(self.initial_projected[:,0], self.initial_projected[:,1], c=labels)
+        ln = plt.scatter(self.initial_projected[:,0], self.initial_projected[:,1], c=labels, s=3)
         projected = self.initial_projected
+        prev_grad = np.zeros((self.num_points, self.dim))
 
         def init():
             #fig.gca().relim()
@@ -151,7 +155,7 @@ class JaccardGradient():
         # this is a closure that encloses the projected variable
         # that's necessary to keep updating the newest projection
         def update(frame):
-            pr,_ = self.step(projected, eps=1.0, verbose=True)
+            pr,gr = self.step(projected, prev_grad, eps=1.0, gamma=.9, verbose=True)
             ln.set_offsets(pr)
             return ln,
 
