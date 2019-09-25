@@ -3,7 +3,7 @@ import torch_geometric
 from torch import tensor, zeros
 from torch.nn import Sequential as Seq, Linear, ReLU, BatchNorm1d as BN, ModuleList
 from torch.autograd import Variable
-from torch_scatter import scatter_mean
+from torch_scatter import scatter_mean, scatter_add, scatter_max
 from torch_geometric.nn import MetaLayer
 from torchvision import datasets
 from torchvision import transforms
@@ -26,15 +26,17 @@ def MLP(channels):
 #     connectivity, its edge features and its global features.
 #     (default: :obj:`None`)
 class NodeModel(torch.nn.Module):
-    def __init__(self, node_in_size=2, node_out_size=2, msg_size=128):
+    def __init__(self, node_in_size=2, node_out_size=2):
         super(NodeModel, self).__init__()
         # TODO layer sizes?
         msg_h1 = 128
         node_h1 = 128
-        edge_size = 1
-        self.msg_mlp = MLP([node_in_size+edge_size, msg_h1, msg_size])
+        edge_size = 3
+        msg_size = node_in_size+3
+        #self.msg_mlp = MLP([node_in_size+edge_size, msg_h1, msg_size])
         self.node_mlp = MLP([node_in_size+msg_size, node_h1, node_out_size])
 
+    # edge_attr = true_dist, dist, dir_x, dir_y
     def forward(self, x, edge_index, edge_attr, u, batch):
         # x: [N, F_x], where N is the number of nodes. F_x is size of node features
         # edge_index: [2, E] with max entry N - 1. E - number of edges in graph
@@ -43,12 +45,12 @@ class NodeModel(torch.nn.Module):
         # batch: [N] with max entry B - 1.  row, col = edge_index
         dst, src = edge_index
         msg = torch.cat([x[src], edge_attr], dim=1)
-        msg = self.msg_mlp(msg)
+        #msg = self.msg_mlp(msg)
         # TODO different type of aggregation across node features?
         agg_msg = scatter_mean(src=msg,  # sum mlp transformed inputs
-                               index=src, # per node 
-                               dim=0,  
-                               dim_size=x.size(0)) # make same size as input
+                                 index=src, # per node 
+                                 dim=0,  
+                                 dim_size=x.size(0)) # make same size as input
          
         out = self.node_mlp(torch.cat([x, agg_msg], dim=1))
         
@@ -74,30 +76,39 @@ class GraphMap(torch.nn.Module):
         # concatenate to make COO format
         self.edge_index = tensor(np.array((dst,src)), dtype=torch.int64)
 
+        # TODO replace hardcoded 2 with number of dimensions?
+        self.random_start = tensor(np.random.normal(loc=0.0, scale=1.0, size=(self.rows, 2)),dtype=torch.float32)
+
         # TODO still need to normalize?
         true_distances = torch.as_tensor(self.dists, dtype=torch.float32)
         true_distances = true_distances[:,1:].reshape(-1,1)
         max_dist = torch.max(true_distances)
         self.true_distances_norm = true_distances / max_dist
-        self.edge_attr = tensor(self.true_distances_norm, dtype=torch.float32)
+        self.direction = self.random_start[dst] - self.random_start[src]
+
+        #self.edge_attr = tensor(self.true_distances_norm, dtype=torch.float32)
+        self.edge_attr = torch.cat(
+                            (tensor(self.true_distances_norm, dtype=torch.float32), 
+                             tensor(self.direction, dtype=torch.float32)),
+                             dim=1)
 
         self.layers = ModuleList()
         for i in range(1,len(node_sizes)):
             nm = NodeModel(node_in_size=node_sizes[i-1],
-                           node_out_size=node_sizes[i],
-                           msg_size=node_sizes[i-1])
+                           node_out_size=node_sizes[i])
+                           #msg_size=node_sizes[i-1])
             layer = MetaLayer(node_model=nm)
             self.layers.append(layer)
         #self.model = Seq(*self.layers)
 
     def reduce(self):
-        x = self.data
+        x = self.random_start
         for layer in self.layers:
             x, _, _ = layer.forward(x, self.edge_index, self.edge_attr, u=None, batch=None)
         return x
 
     def forward(self):
-        x = self.data
+        x = self.random_start
         for layer in self.layers:
             x, _, _ = layer.forward(x, self.edge_index, self.edge_attr, u=None, batch=None)
         projected = x
@@ -137,11 +148,11 @@ data = Variable(data.view(-1, 28*28))
 
 epochs = 200
 
-num_points = 1000
-num_neighbors = 20
+num_points = 100
+num_neighbors = 50
 # TODO optimize layer number/size
 reducer = GraphMap(data.data[:num_points],
-                   node_sizes=[28**2, 256, 64, 2],
+                   node_sizes=[2, 2, 2, 2, 2],
                    num_neighbors=num_neighbors)
 
 #device = torch.device(0)
@@ -175,4 +186,5 @@ x,y = p[:,0],p[:,1]
 plt.figure(figsize=(10,10))
 plt.scatter(x,y,c=labels,s=8)
 plt.savefig('./data/reduced.png')
+plt.close()
 

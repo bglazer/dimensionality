@@ -5,7 +5,8 @@ from matplotlib import pyplot as plt
 from matplotlib import collections
 from matplotlib.animation import FuncAnimation
 
-
+def l2(a):
+    return np.sqrt(np.sum(l2**2, axis=1, keepdims=True))
 
 # find distance from source idx[:,0] to neighbors, using data so that gradient can be calculated
 class JaccardGradient():
@@ -55,16 +56,8 @@ class JaccardGradient():
             update_idxs = np.random.choice(self.num_points, size=num_updates, replace=False)
 
         idxs = self.idxs[update_idxs]
-        nbrs = projected[idxs[:,1:]]
         srcs = projected[idxs[:,0]]
 
-        nbrs = nbrs.transpose((1,0,2))
-
-        # distance from source to non-neighbors
-        d_nbrs = srcs - nbrs
-
-        # Calculate distances
-        dist_nbrs = np.sqrt(np.sum(d_nbrs**2, axis=2))
         # distance to farthest neighbor
         balltree = BallTree(projected, metric=self.metric, leaf_size=self.num_nbrs)
         proj_dists, proj_idxs= balltree.query(srcs, k=self.num_nbrs)
@@ -77,26 +70,33 @@ class JaccardGradient():
         # have to use a for loop because there are a varying number of non neighbors for each point
         # so can't use vectorized numpy operations
         for i,proj_idx in enumerate(proj_idxs):
+            # projected neighbors - true_neighbors = non-true neighbors in projected neighborhood
             non_nbr_idxs = np.setdiff1d(proj_idx, idxs[i], assume_unique=True)
-            if len(non_nbr_idxs) == 0:
-                continue
-            # get points inside the radius
-            #non_nbr_idxs = non_nbr_idxs[1:]
+            # true_neighbors - projected neighbors = true neighbors not in projected neighborhood
+            unmet_idxs = np.setdiff1d(idxs[i], proj_idx, assume_unique=True)
+
+            #if len(non_nbr_idxs) == 0:
+            #    continue
+            ## get points inside the radius
+            ##non_nbr_idxs = non_nbr_idxs[1:]
             non_nbrs = projected[non_nbr_idxs]
-            # find direction from source to the non-neighbors
+            ## find direction from source to the non-neighbors
             d_non_nbrs = srcs[i] - non_nbrs
             dist_non_nbrs = np.sqrt(np.sum(d_non_nbrs**2, axis=1, keepdims=True)) + .00001
 
-            farthest_nbr = proj_dists[i,-1] 
-            constraints = dist_nbrs[:,i] < farthest_nbr
-            # where the constraint is not met, calculate the gradient
-            unmet_idxs = idxs[i,1:][~constraints]
-            unmet_nbrs = d_nbrs[:,i][~constraints]
-            # np.newaxis is a hack to make dist_nbrs broadcastable
-            unmet_dist = dist_nbrs[:,i,np.newaxis][~constraints]
-            grad[unmet_idxs] += -unmet_nbrs/unmet_dist
+            d_unmet_nbrs = srcs[i] - projected[unmet_idxs]
+            dist_unmet_nbrs = np.sqrt(np.sum(unmet_nbrs**2, axis=1, keepdims=True))
+            farthest_nbr_idx = idxs[i, -1]
+            # TODO add gradient for farthest_nbr idx
+            grad[unmet_idxs] += -unmet_nbrs/dist_unmet_nbrs
 
             grad[non_nbr_idxs] += d_non_nbrs/dist_non_nbrs
+
+            # gradient with respect to farthest neighbor (threshold of neighborhood)
+            farthest_nbr = proj_dists[-1]
+            farthest_nbr_dist = np.sqrt(np.sum(proj
+            breakpoint()
+            #grad[farthest_nbr_idx] += fartO
 
             # gradient with respect to source point
             grad[update_idxs[i]] += \
@@ -109,46 +109,51 @@ class JaccardGradient():
         #projected[update_idxs] -= grad[update_idxs]
         projected -= grad
 
+        ajd = self.average_jaccard(projected)
+
         if verbose:
             # TODO more diagnostic info
             print(f'gradient {np.sum(grad**2)}')
-            print(self.average_jaccard(projected))
+            print(ajd)
 
-        return projected, grad
+        return projected, grad, ajd
 
     def fit_transform(self, num_updates=None, eps=1.0, gamma=.9, num_iters=50, verbose=False):
         if verbose:
             start_ajd = self.average_jaccard(self.initial_projected)
             
-        projected, grad = self.step(projected=self.initial_projected, 
-                                    num_updates=num_updates,
-                                    gamma=gamma,
-                                    eps=eps,
-                                    verbose=verbose)
+        projected, grad, ajd = self.step(projected=self.initial_projected, 
+                                         num_updates=num_updates,
+                                         gamma=gamma,
+                                         eps=eps,
+                                         verbose=verbose)
         prev_grad = grad
+        best_ajd = 1.0
         for i in range(num_iters-1):
             # TODO learning rate decay?
-            eps = .99*eps
+            #eps = .99*eps
             if verbose: print(i)
-            projected, grad = self.step(projected=projected,
-                                        num_updates=num_updates,
-                                        prev_grad=prev_grad,
-                                        gamma=gamma,
-                                        eps=eps,
-                                        verbose=verbose)
+            projected, grad, ajd = self.step(projected=projected,
+                                             num_updates=num_updates,
+                                             prev_grad=prev_grad,
+                                             gamma=gamma,
+                                             eps=eps,
+                                             verbose=verbose)
             prev_grad = grad
+            if ajd < best_ajd:
+                best_ajd = ajd
+                best_projection = projected
 
         if verbose:
-            end_ajd = self.average_jaccard(projected)
             print(f'start: average jaccard {start_ajd}')
-            print(f'end  : average jaccard {end_ajd}')
+            print(f'best : average jaccard {best_ajd}')
          
-        return projected, grad
+        return best_projection, best_ajd
             
 
     def plot(self, projected, labels=None, grad=None, filename=None):
         fig, ax = plt.subplots(figsize=(20,20))
-        plt.scatter(projected[:,0], projected[:,1], c=labels, s=6)
+        plt.scatter(projected[:,0], projected[:,1], c=labels, s=20)
         if grad is not None:
             lines = np.stack((projected,projected+grad)).transpose((1,0,2))
             lc = collections.LineCollection(lines)
