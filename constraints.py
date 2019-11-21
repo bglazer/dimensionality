@@ -4,9 +4,10 @@ from sklearn.decomposition import PCA
 from matplotlib import pyplot as plt
 from matplotlib import collections
 from matplotlib.animation import FuncAnimation
+from itertools import combinations
 
 def l2(a):
-    return np.sqrt(np.sum(l2**2, axis=1, keepdims=True))
+    return np.sqrt(np.sum(a**2, axis=1, keepdims=True))
 
 # find distance from source idx[:,0] to neighbors, using data so that gradient can be calculated
 class JaccardGradient():
@@ -19,6 +20,8 @@ class JaccardGradient():
         balltree = BallTree(data, metric=self.metric, leaf_size=self.num_nbrs)
         _, self.idxs = balltree.query(data, k=self.num_nbrs)
 
+        self.rjd = self.relative_jaccard()
+
         # project data into lower dimension
         if projection == 'random':
             self.initial_projected = np.random.random((self.num_points, self.dim))
@@ -30,9 +33,9 @@ class JaccardGradient():
 
     # TODO fix this 
     def clip(self, grad, maxgrad=.25):
-        grad_nrm = np.sqrt(np.sum((grad)**2))
-        if grad_nrm > maxgrad:
-            grad = grad/grad_nrm * maxgrad
+        grad_nrm = np.sqrt(np.sum(grad**2, axis=1))
+        over = grad_nrm > g
+        grad[over] = grad[over]/grad_nrm[over] * maxgrad
         return grad
       
     def average_jaccard(self, projected):
@@ -47,12 +50,44 @@ class JaccardGradient():
             ajd += (union - inter)/union
 
         return ajd/self.num_points
+    
+    def relative_jaccard(self):
+        self.nbrhds = {i:[] for i in range(self.num_points)}
+        for nbrs in self.idxs:
+            # exclude the first idx which is just the source point
+            nbrs = nbrs[1:]
+            i = nbrs[0]
+            for nbr in nbrs:
+                self.nbrhds[nbr].append(i)
+    
+        # TODO these variable names suck
+        rjd = {}
+        for i,j in combinations(range(self.num_points), r=2):
+            # neighbors of the source point
+            a = self.idxs[i]
+            ajd = 0.0
+            # neighborhoods the other point is in
+            for nbrhd in self.nbrhds[j]:
+                # points in the other neighborhoods
+                b = self.idxs[nbrhd]
+                # jaccard distance between the source point and the points in the other neighborhood
+                inter = len(set(a) & set(b))
+                union = len(set(a) | set(b))
+                ajd += (union - inter)/union
+            if len(self.nbrhds[j]) > 0:
+                rjd[(i,j)] = 1-ajd/len(self.nbrhds[j])
+            else:
+                rjd[(i,j)] = 0.0
+
+        return rjd
 
     def step(self, projected, num_updates=None, prev_grad=None, eps=1.0, gamma=.9, verbose=False):
+        # determine whether we're updating every point (num_updates = None) or if we're doing stochasting gradient descent
         if num_updates is None:
             update_idxs = np.arange(self.num_points)
             num_updates = self.num_points
         else:
+            # stochastic updates
             update_idxs = np.random.choice(self.num_points, size=num_updates, replace=False)
 
         idxs = self.idxs[update_idxs]
@@ -60,12 +95,14 @@ class JaccardGradient():
 
         # distance to farthest neighbor
         balltree = BallTree(projected, metric=self.metric, leaf_size=self.num_nbrs)
+        # find k nearest neighbors and their distances
         proj_dists, proj_idxs= balltree.query(srcs, k=self.num_nbrs)
 
         grad = np.zeros((self.num_points, self.dim))
+        # initialize previous gradient on first step
         if prev_grad is None:
             prev_grad = np.zeros((self.num_points, self.dim))
-        # TODO somehow switch to vectorized operations?
+
         # find distance to closest non-neighbor in projected space
         # have to use a for loop because there are a varying number of non neighbors for each point
         # so can't use vectorized numpy operations
@@ -75,36 +112,45 @@ class JaccardGradient():
             # true_neighbors - projected neighbors = true neighbors not in projected neighborhood
             unmet_idxs = np.setdiff1d(idxs[i], proj_idx, assume_unique=True)
 
-            #if len(non_nbr_idxs) == 0:
-            #    continue
-            ## get points inside the radius
-            ##non_nbr_idxs = non_nbr_idxs[1:]
             non_nbrs = projected[non_nbr_idxs]
             ## find direction from source to the non-neighbors
             d_non_nbrs = srcs[i] - non_nbrs
             dist_non_nbrs = np.sqrt(np.sum(d_non_nbrs**2, axis=1, keepdims=True)) + .00001
 
+            # distance to neighbors not in the projected neighborhood 
             d_unmet_nbrs = srcs[i] - projected[unmet_idxs]
-            dist_unmet_nbrs = np.sqrt(np.sum(unmet_nbrs**2, axis=1, keepdims=True))
-            farthest_nbr_idx = idxs[i, -1]
-            # TODO add gradient for farthest_nbr idx
-            grad[unmet_idxs] += -unmet_nbrs/dist_unmet_nbrs
+            dist_unmet_nbrs = np.sqrt(np.sum(d_unmet_nbrs**2, axis=1, keepdims=True))
+            grad[unmet_idxs] += (-d_unmet_nbrs/dist_unmet_nbrs)
+            # adjust gradient wrt average jaccard distance of points
+            # Not sure this is working
+            #for unmet_idx in unmet_idxs:
+            #    rjd_idx = (i,unmet_idx) if unmet_idx > i else (unmet_idx,i)
+            #    adjustment = 1-self.rjd[rjd_idx]
+                #adjustment = 1 if adjustment > .9 else 0
+                #print(adjustment)
+                #grad[unmet_idxs] *= adjustment
+                #breakpoint()
 
-            grad[non_nbr_idxs] += d_non_nbrs/dist_non_nbrs
+            grad[non_nbr_idxs] += (d_non_nbrs/dist_non_nbrs)
 
             # gradient with respect to farthest neighbor (threshold of neighborhood)
-            farthest_nbr = proj_dists[-1]
-            farthest_nbr_dist = np.sqrt(np.sum(proj
-            breakpoint()
-            #grad[farthest_nbr_idx] += fartO
+            # TODO not sure  this is working right
+            farthest_nbr_idx = proj_idxs[i, -1]
+            d_farthest_nbr = srcs[i] - projected[farthest_nbr_idx]
+            dist_farthest_nbr = proj_dists[i, -1]
+            # TODO multiply by number of unmet neighbors and non-neighbors?
+            grad[farthest_nbr_idx] += d_farthest_nbr/dist_farthest_nbr
 
             # gradient with respect to source point
             grad[update_idxs[i]] += \
-                np.sum(unmet_nbrs/unmet_dist, axis=0) - \
+                np.sum(d_unmet_nbrs/dist_unmet_nbrs, axis=0) - \
                 np.sum(d_non_nbrs/dist_non_nbrs, axis=0)
 
+
             
-        grad = (grad*eps + prev_grad*gamma)
+        grad = (grad*eps + prev_grad*gamma) 
+        #print(np.max(grad, axis=0))
+        #print(np.min(grad, axis=0))
 
         #projected[update_idxs] -= grad[update_idxs]
         projected -= grad
@@ -113,8 +159,8 @@ class JaccardGradient():
 
         if verbose:
             # TODO more diagnostic info
-            print(f'gradient {np.sum(grad**2)}')
-            print(ajd)
+            print(f'gradient: {np.sum(grad**2)}')
+            print(f'     AJD: {ajd})')
 
         return projected, grad, ajd
 
@@ -132,7 +178,7 @@ class JaccardGradient():
         for i in range(num_iters-1):
             # TODO learning rate decay?
             #eps = .99*eps
-            if verbose: print(i)
+            if verbose: print('step',i)
             projected, grad, ajd = self.step(projected=projected,
                                              num_updates=num_updates,
                                              prev_grad=prev_grad,
@@ -163,9 +209,9 @@ class JaccardGradient():
         else:
             plt.savefig(filename)
 
-    # TODO fix this
     def animate(self, num_iters, labels):
         fig, ax = plt.subplots()
+        fig.set_size_inches(6, 6)
         ln = plt.scatter(self.initial_projected[:,0], self.initial_projected[:,1], c=labels, s=3)
         projected = self.initial_projected
         prev_grad = np.zeros((self.num_points, self.dim))
@@ -178,7 +224,7 @@ class JaccardGradient():
         # this is a closure that encloses the projected variable
         # that's necessary to keep updating the newest projection
         def update(frame):
-            pr,gr = self.step(projected, prev_grad, eps=1.0, gamma=.9, verbose=True)
+            pr,gr,ajd = self.step(projected, prev_grad=prev_grad, eps=1.0, gamma=.9, verbose=True)
             ln.set_offsets(pr)
             return ln,
 
