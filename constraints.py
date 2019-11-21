@@ -93,9 +93,8 @@ class JaccardGradient():
         idxs = self.idxs[update_idxs]
         srcs = projected[idxs[:,0]]
 
-        # distance to farthest neighbor
+        # find k nearest neighbors and their distances in the projected space
         balltree = BallTree(projected, metric=self.metric, leaf_size=self.num_nbrs)
-        # find k nearest neighbors and their distances
         proj_dists, proj_idxs= balltree.query(srcs, k=self.num_nbrs)
 
         grad = np.zeros((self.num_points, self.dim))
@@ -103,7 +102,6 @@ class JaccardGradient():
         if prev_grad is None:
             prev_grad = np.zeros((self.num_points, self.dim))
 
-        # find distance to closest non-neighbor in projected space
         # have to use a for loop because there are a varying number of non neighbors for each point
         # so can't use vectorized numpy operations
         for i,proj_idx in enumerate(proj_idxs):
@@ -116,29 +114,18 @@ class JaccardGradient():
             ## find direction from source to the non-neighbors
             d_non_nbrs = srcs[i] - non_nbrs
             dist_non_nbrs = np.sqrt(np.sum(d_non_nbrs**2, axis=1, keepdims=True)) + .00001
+            grad[non_nbr_idxs] += (d_non_nbrs/dist_non_nbrs)
 
             # distance to neighbors not in the projected neighborhood 
             d_unmet_nbrs = srcs[i] - projected[unmet_idxs]
             dist_unmet_nbrs = np.sqrt(np.sum(d_unmet_nbrs**2, axis=1, keepdims=True))
             grad[unmet_idxs] += (-d_unmet_nbrs/dist_unmet_nbrs)
-            # adjust gradient wrt average jaccard distance of points
-            # Not sure this is working
-            #for unmet_idx in unmet_idxs:
-            #    rjd_idx = (i,unmet_idx) if unmet_idx > i else (unmet_idx,i)
-            #    adjustment = 1-self.rjd[rjd_idx]
-                #adjustment = 1 if adjustment > .9 else 0
-                #print(adjustment)
-                #grad[unmet_idxs] *= adjustment
-                #breakpoint()
-
-            grad[non_nbr_idxs] += (d_non_nbrs/dist_non_nbrs)
 
             # gradient with respect to farthest neighbor (threshold of neighborhood)
             # TODO not sure  this is working right
             farthest_nbr_idx = proj_idxs[i, -1]
             d_farthest_nbr = srcs[i] - projected[farthest_nbr_idx]
             dist_farthest_nbr = proj_dists[i, -1]
-            # TODO multiply by number of unmet neighbors and non-neighbors?
             grad[farthest_nbr_idx] += d_farthest_nbr/dist_farthest_nbr
 
             # gradient with respect to source point
@@ -148,11 +135,10 @@ class JaccardGradient():
 
 
             
+        # Update gradient
         grad = (grad*eps + prev_grad*gamma) 
-        #print(np.max(grad, axis=0))
-        #print(np.min(grad, axis=0))
 
-        #projected[update_idxs] -= grad[update_idxs]
+        # Gradient descent step
         projected -= grad
 
         ajd = self.average_jaccard(projected)
@@ -209,7 +195,7 @@ class JaccardGradient():
         else:
             plt.savefig(filename)
 
-    def animate(self, num_iters, labels):
+    def animate(self, num_iters, labels, save_file, eps=.25, gamma=.9):
         fig, ax = plt.subplots()
         fig.set_size_inches(6, 6)
         ln = plt.scatter(self.initial_projected[:,0], self.initial_projected[:,1], c=labels, s=3)
@@ -224,12 +210,11 @@ class JaccardGradient():
         # this is a closure that encloses the projected variable
         # that's necessary to keep updating the newest projection
         def update(frame):
-            pr,gr,ajd = self.step(projected, prev_grad=prev_grad, eps=1.0, gamma=.9, verbose=True)
+            pr,gr,ajd = self.step(projected, prev_grad=prev_grad, eps=eps, gamma=gamma, verbose=True)
             ln.set_offsets(pr)
             return ln,
 
         ani = FuncAnimation(fig, update, frames=range(num_iters),
                             init_func=init, interval=0.001, repeat=False)
-        plt.show()
-        ani.save(filename='constraints_animation.gif', writer='imagemagick')
+        ani.save(filename=save_file, writer='imagemagick')
 

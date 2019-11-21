@@ -5,15 +5,16 @@ from matplotlib.animation import FuncAnimation
 from constraints import JaccardGradient
 from data import load_mnist, small_example
 
-num_points = 2000
+num_points = 1500
 dim = 2
 
-num_iters = 1000
-eps = 1
-num_nbrs = 5
+num_iters = 100
+eps = .25
+gamma = .9
+num_nbrs = 50
 
 data, labels = load_mnist(num_points = num_points)
 #data, labels = small_example()
 
 jg = JaccardGradient(data, dim=2, num_nbrs=num_nbrs, projection='pca')
-jg.animate(num_iters, labels)
+jg.animate(num_iters, labels, 'constraints_animation_2.gif', eps, gamma)
