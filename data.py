@@ -10,12 +10,22 @@ def load_mnist(num_points):
 
 
 # Random completely separated data
-def small_example():
-    a = np.random.random((10,2))+10
-    b = np.random.random((10,2))
+def small_example(N):
+    a = np.random.random((N,2))+10
+    b = np.random.random((N,2))
     data = np.concatenate((a,b))
-    num_points = 20
-    labels = np.ones(20)
-    labels[10:] = 2
+    num_points = N*2
+    labels = np.ones(N*2)
+    labels[N:] = 2
+    return data, labels
+
+# Random completely separated data
+def projection_example(N, high_dim):
+    a = (np.random.random((N,high_dim))-.5)+10
+    b = np.random.random((N,high_dim))-.5
+    data = np.concatenate((a,b))
+    num_points = N*2
+    labels = np.ones(N*2)
+    labels[N:] = 2
     return data, labels
 
