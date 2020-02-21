@@ -9,7 +9,12 @@ from itertools import combinations
 def l2(a):
     return np.sqrt(np.sum(a**2, axis=1, keepdims=True))
 
-# find distance from source idx[:,0] to neighbors, using data so that gradient can be calculated
+def clip(grad, maxgrad=.25):
+    grad_nrm = np.sqrt(np.sum(grad**2, axis=1))
+    over = grad_nrm > maxgrad
+    grad[over] = grad[over]/grad_nrm[over].reshape((-1,1)) * maxgrad
+    return grad 
+    
 class JaccardGradient():
     def __init__(self, data, dim, num_nbrs, metric='euclidean', projection='pca'):
         self.dim = dim
@@ -31,13 +36,6 @@ class JaccardGradient():
         else:
             raise Exception(f'The given projection: "{projection}" is not supported. Try "pca" or "random"')
 
-    # TODO fix this 
-    def clip(self, grad, maxgrad=.25):
-        grad_nrm = np.sqrt(np.sum(grad**2, axis=1))
-        over = grad_nrm > g
-        grad[over] = grad[over]/grad_nrm[over] * maxgrad
-        return grad
-      
     def average_jaccard(self, projected):
         balltree = BallTree(projected, metric=self.metric, leaf_size=self.num_nbrs)
         _, proj_idxs = balltree.query(projected, k=self.num_nbrs)
@@ -176,9 +174,9 @@ class JaccardGradient():
                                              eps=eps,
                                              verbose=verbose)
             prev_grad = grad
-            if ajd < best_ajd:
-                best_ajd = ajd
-                best_projection = projected
+            #if ajd < best_ajd:
+            #    best_ajd = ajd
+            #    best_projection = projected
 
         if verbose:
             print(f'start: average jaccard {start_ajd}')
@@ -334,7 +332,7 @@ class JaccardProjectionGradient(JaccardGradient):
         if verbose:
             # TODO more diagnostic info
             print(f'gradient: {np.sum(grad**2)}')
-            print(f'     AJD: {ajd})')
+            print(f'     AJD: {ajd}')
 
         return projected, grad, ajd
 
@@ -345,6 +343,8 @@ class DistanceConstraint(JaccardGradient):
         super().__init__(data, dim, num_nbrs, metric, projection)
 
         self.bndry_dists = self.dists[:,-1]
+        # TODO alter boundary distance
+        #self.bndry_dists = np.ones((self.num_points)) * 10
         self.data = data
 
         self.low_dim = dim
@@ -360,6 +360,7 @@ class DistanceConstraint(JaccardGradient):
             self.projected = self.data @ self.P.T
 
     def step(self, projected, num_updates=None, prev_grad=None, eps=1.0, gamma=.9, verbose=False):
+        #TODO make this work for stochastic updates
         # determine whether we're updating every point (num_updates = None) or if we're doing stochastic gradient descent
         if num_updates is None:
             update_idxs = np.arange(self.num_points)
@@ -389,15 +390,19 @@ class DistanceConstraint(JaccardGradient):
             nbrs = np.setdiff1d(idx, proj_idxs[i], assume_unique=True)
             non_nbrs = np.setdiff1d(proj_idxs[i], idx, assume_unique=True)
 
-            #breakpoint()
-            dvectors = data[i] - data[nbrs]
-            distances = np.sqrt(np.sum(dvectors**2, axis=1, keepdims=True))
             boundary = self.bndry_dists[i]
+
+            # TODO check the math on how to calculate distances?
+            dvectors = data[i] - data[nbrs]
+            pdvectors = projected[i] - projected[nbrs]
+            distances = np.sqrt(np.sum(pdvectors**2, axis=1, keepdims=True))
             grad[nbrs] += dvectors/distances * (distances - boundary)
 
             dvectors = data[i] - data[non_nbrs]
-            distances = np.sqrt(np.sum(dvectors**2, axis=1, keepdims=True))
+            pdvectors = projected[i] - projected[non_nbrs]
+            distances = np.sqrt(np.sum(pdvectors**2, axis=1, keepdims=True))
             grad[non_nbrs] += dvectors/distances * (distances - boundary)
+
             total_nbr += len(nbrs)
             total_non_nbr += len(non_nbrs)
             
@@ -405,9 +410,10 @@ class DistanceConstraint(JaccardGradient):
         #breakpoint()
         grad = (self.PP @ grad.T).T
         grad = (grad*eps + prev_grad*gamma) 
+        # TODO make maxgrad a parameter
+        #grad = clip(grad, maxgrad=10)
         projected = data @ self.P.T
         self.projected = projected
-
 
         # Gradient descent step
         self.data += grad
@@ -418,7 +424,93 @@ class DistanceConstraint(JaccardGradient):
             print(f' num nbr: {total_nbr}')
             print(f' num non: {total_non_nbr}')
             print(f'gradient: {np.sum(grad**2)}')
-            print(f'     AJD: {ajd})')
+            print(f'     AJD: {ajd}')
 
         return projected, grad, ajd
 
+class ProjectionGradient(JaccardGradient):
+
+    def __init__(self, data, dim, num_nbrs, metric='euclidean', projection='pca'):
+        super().__init__(data, dim, num_nbrs, metric, projection)
+
+        self.bndry_dists = self.dists[:,-1]
+        # TODO alter boundary distance
+        #self.bndry_dists = np.ones((self.num_points)) * 10
+        self.data = data
+
+        self.low_dim = dim
+        self.high_dim = data.shape[1]
+        # kept for compatibility with parent JaccardGradient methods
+        self.dim = self.high_dim
+
+        # project data into lower dimension
+        if projection == 'random':
+            # subtract .5 to center the random variables at 0
+            self.P = np.random.random((self.low_dim, self.high_dim))-.5
+            self.PP = self.P.T @ self.P
+            self.projected = self.data @ self.P.T
+            
+    def step(self, projected, num_updates=None, prev_grad=None, eps=1.0, gamma=.9, verbose=False):
+        #TODO make this work for stochastic updates
+        # determine whether we're updating every point (num_updates = None) or if we're doing stochastic gradient descent
+        if num_updates is None:
+            update_idxs = np.arange(self.num_points)
+            num_updates = self.num_points
+        else:
+            # stochastic updates
+            update_idxs = np.random.choice(self.num_points, size=num_updates, replace=False)
+
+        #TODO make this work for stochastic updates
+        idxs = self.idxs[update_idxs]
+        srcs = projected[idxs[:,0]]
+
+        grad = np.zeros((self.num_points, self.high_dim))
+        # initialize previous gradient on first step
+        if prev_grad is None:
+            prev_grad = np.zeros((self.num_points, self.high_dim))
+
+        data = self.data
+        
+        balltree = BallTree(projected, metric=self.metric, leaf_size=self.num_nbrs)
+        proj_idxs, proj_dists = balltree.query_radius(projected, self.bndry_dists, return_distance=True)
+
+        total_nbr = 0
+        total_non_nbr = 0
+
+        grad = np.zeros((self.high_dim, self.high_dim))
+
+        for idx in self.idxs:
+            i = idx[0]
+            nbrs = np.setdiff1d(idx, proj_idxs[i], assume_unique=True)
+            non_nbrs = np.setdiff1d(proj_idxs[i], idx, assume_unique=True)
+
+            boundary = self.bndry_dists[i]
+
+            # TODO check the math on how to calculate distances?
+            dvectors = data[i] - data[nbrs]
+
+            # compute sum of outer products of all distance vectors
+            # Einsum is dark magic, but I got this to do what I think is right, so...
+            grad += np.einsum('ia,ib->ab',dvectors, dvectors)
+
+            dvectors = data[i] - data[non_nbrs]
+            grad += -np.einsum('ia,ib->ab',dvectors, dvectors)
+        
+        #breakpoint()
+        grad = (self.P @ grad)*eps
+        self.P -= grad*eps
+
+        projected = data @ self.P.T
+        self.projected = projected
+
+        # Gradient descent step
+        ajd = self.average_jaccard(projected)
+
+        if verbose:
+            # TODO more diagnostic info
+            print(f' num nbr: {total_nbr}')
+            print(f' num non: {total_non_nbr}')
+            print(f'gradient: {np.sum(grad**2)}')
+            print(f'     AJD: {ajd}')
+
+        return projected, grad, ajd
