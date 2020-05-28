@@ -53,11 +53,12 @@ class LNLE(torch.nn.Module):
         # concatenate to make COO format
         self.edge_index = tensor(np.array((dst,src)), dtype=torch.int64)
 
-        self.reconstruction = GATConv(in_channels=D, out_channels=D, heads=1, 
+        self.projection = MLP([D, 246, d])
+        self.reconstruction = GATConv(in_channels=d, out_channels=D, heads=1, 
                                       concat=True, negative_slope=0.2, dropout=0, bias=True)
-        self.model = MetaLayer(node_model=self.reconstruction)#, edge_model=self.projection)
 
     def forward(self, x):
+        x = self.projection(x)
         x = relu(self.reconstruction(x, self.edge_index))#, edge_attr=None, u=None, batch=None)
         return x
 
@@ -103,37 +104,13 @@ import matplotlib.pyplot as plt
 images = np.zeros((28*10,28*2))
 for i in range(10):
     im = data[i].reshape(28,28).detach().numpy()
+    projected = lnle.projection(data)
     re = projected[i].reshape(28,28).detach().numpy()
     images[28*i:28*i+28,:] = np.concatenate((im,re),1)
     
 plt.imshow(images)
 plt.show()
 
-print('optimizing reduced dimension points')
-transform_epochs = 2000
-reduced = torch.rand((data.shape[0], d))
-reduced.requires_grad = True
-# TODO, change number/size of layers in up projection
-#up_projection = MLP([d, 256, 512, 1024, 2048, data.shape[1]])
-up_projection = Linear(d, data.shape[1])
-projection_optimizer = torch.optim.Adam(up_projection.parameters())
-point_optimizer = torch.optim.Adam([reduced], lr=.8)
-for epoch in range(transform_epochs):
-    print(f'epoch: {epoch}')
-    projection_optimizer.zero_grad()
-    point_optimizer.zero_grad()
-    up = up_projection(reduced)
-    projected = lnle.forward(up)
-    loss = mse(projected, data)
-    loss.backward()
-    point_optimizer.step()
-    #if epoch%20==0:
-    projection_optimizer.step()
-    print(float(loss))
-
-##import pickle
-##pickle.dump(reduced, open('./data/proj.pickle','wb'))
-#
 labels = pickle.load(open('./data/labels.pickle','rb'))[:num_points]
 
 p = reduced.detach().numpy()
