@@ -2,7 +2,8 @@ import torch
 import torch_geometric
 from torch import tensor, zeros
 from torch.nn import Sequential as Seq, Linear, ReLU, BatchNorm1d as BN, ModuleList, Sigmoid
-from torch.nn.functional import softmax, elu, relu, sigmoid
+from torch.nn.functional import softmax, elu, relu
+from torch import sigmoid
 from torch.autograd import Variable
 from torch_scatter import scatter_mean, scatter_add, scatter_max, scatter_softmax
 from torch_geometric.nn import MetaLayer, global_max_pool, GlobalAttention, Set2Set, GATConv
@@ -41,6 +42,7 @@ class LNLE(torch.nn.Module):
 
         D = self.cols
 
+        # TODO replace with torch_geometric knn
         balltree = BallTree(data)
         self.num_neighbors=num_neighbors
         self.dists, self.idxs = balltree.query(data, k=num_neighbors)
@@ -53,13 +55,19 @@ class LNLE(torch.nn.Module):
         # concatenate to make COO format
         self.edge_index = tensor(np.array((dst,src)), dtype=torch.int64)
 
-        self.projection = MLP([D, 246, d])
-        self.reconstruction = GATConv(in_channels=d, out_channels=D, heads=1, 
+        self.projection = MLP([D, 256, 256, d])
+        self.graph_conv1 = GATConv(in_channels=d, out_channels=10, heads=4, 
                                       concat=True, negative_slope=0.2, dropout=0, bias=True)
+        self.graph_conv2 = GATConv(in_channels=40, out_channels=D, heads=1, 
+                                      concat=True, negative_slope=0.2, dropout=0, bias=True)
+        self.reconstruction = MLP([400, D*2, D*2, D])
 
     def forward(self, x):
         x = self.projection(x)
-        x = relu(self.reconstruction(x, self.edge_index))#, edge_attr=None, u=None, batch=None)
+        x = relu(self.graph_conv1(x, self.edge_index))
+        x = sigmoid(self.graph_conv2(x, self.edge_index)) * 256
+        #x = relu(self.graph_conv2(x, self.edge_index))
+        #x = sigmoid(self.reconstruction(x)) * 256
         return x
 
 if torch.cuda.is_available():
@@ -77,9 +85,9 @@ data = data.data
 data = data.type(torch.FloatTensor)
 data = Variable(data.view(-1, 28*28))
 
-epochs = 100
+epochs = 1000
 
-num_points = 100
+num_points = 1500
 num_neighbors = 10
 
 data = data.data[:num_points]
@@ -98,14 +106,14 @@ for epoch in range(epochs):
     loss = mse(projected, data)
     loss.backward()
     optimizer.step()
-    print(loss)
+    print(float(loss))
 
 import matplotlib.pyplot as plt
 images = np.zeros((28*10,28*2))
 for i in range(10):
     im = data[i].reshape(28,28).detach().numpy()
-    projected = lnle.projection(data)
-    re = projected[i].reshape(28,28).detach().numpy()
+    reconstructed = lnle(data)
+    re = reconstructed[i].reshape(28,28).detach().numpy()
     images[28*i:28*i+28,:] = np.concatenate((im,re),1)
     
 plt.imshow(images)
@@ -113,6 +121,7 @@ plt.show()
 
 labels = pickle.load(open('./data/labels.pickle','rb'))[:num_points]
 
+reduced = lnle.projection(data)
 p = reduced.detach().numpy()
 x,y = p[:,0],p[:,1]
 
